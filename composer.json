@@ -1,0 +1,11 @@
+{
+    "name": "yournextship/wpnextship-client",
+    "license": "gpl-v2-or-later",
+    "authors": [
+        {
+            "name": "Zabir",
+            "email": "zabiranik.me@gmail.com"
+        }
+    ],
+    "require": {}
+}
