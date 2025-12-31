@@ -49,9 +49,14 @@ if ( ! class_exists( 'WPNextShip_Updater' ) ) {
 				return $transient;
 			}
 
+			$plugin_slug = plugin_basename( $this->args['file'] );
+
 			// Get the license key.
 			$license_data = get_option( $this->option_name, array() );
 			if ( empty( $license_data['key'] ) || 'active' !== $license_data['status'] ) {
+				if ( isset( $transient->response[ $plugin_slug ] ) ) {
+					unset( $transient->response[ $plugin_slug ] );
+				}
 				return $transient;
 			}
 
@@ -60,31 +65,54 @@ if ( ! class_exists( 'WPNextShip_Updater' ) ) {
 				trailingslashit( WPNEXTSHIP_API_URL ) . 'update',
 				array(
 					'timeout' => 15,
-					'body'    => array(
+                    'headers' => array(
+                        'Content-Type' => 'application/json',
+                    ),
+					'body'    => wp_json_encode ( array(
 						'license_key' => $license_data['key'],
 						'url'         => site_url(),
 						'slug'        => $this->args['slug'],
 						'version'     => $this->args['version'],
-					),
+					)),
 				)
 			);
 
-			if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+			if ( is_wp_error( $response ) ) {
 				return $transient;
 			}
 
-			$body = wp_remote_retrieve_body( $response );
-			$data = json_decode( $body, true );
+            $response_code = wp_remote_retrieve_response_code( $response );
+            $body          = wp_remote_retrieve_body( $response );
+            $data          = json_decode( $body, true );
 
-			if ( ! empty( $data['new_version'] ) && version_compare( $data['new_version'], $this->args['version'], '>' ) ) {
-				$obj              = new stdClass();
-				$obj->slug        = $this->args['slug'];
-				$obj->plugin      = $this->args['file'];
-				$obj->new_version = $data['new_version'];
-				$obj->url         = $data['url']; // Info URL.
-				$obj->package     = $data['package']; // Download URL.
+			// If the response code is 403, it means the license is invalid, expired, or revoked.
+			if ( 403 === $response_code ) {
+				$license_data = get_option( $this->option_name, array() );
+				$license_data['status'] = 'inactive';
+				update_option( $this->option_name, $license_data );
 
-				$transient->response[ $this->args['file'] ] = $obj;
+				if ( isset( $transient->response[ $plugin_slug ] ) ) {
+					unset( $transient->response[ $plugin_slug ] );
+				}
+
+				return $transient;
+			}
+
+			if ( 200 !== $response_code ) {
+				return $transient;
+			}
+
+			// Get the current installed version from the transient.
+			$current_version = isset( $transient->checked[$plugin_slug] ) ? $transient->checked[$plugin_slug] : $this->args['version'];
+
+			if ( ! empty( $data['new_version'] ) && version_compare( $data['new_version'], $current_version, '>' ) ) {
+
+                $transient->response[$plugin_slug] = (object) array(
+                    'new_version' => $data['new_version'],
+                    'package'     => $data['package'],
+                    'slug'        => $plugin_slug,
+                    'url'         => $data['url']
+                );
 			}
 
 			return $transient;

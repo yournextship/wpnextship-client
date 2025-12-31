@@ -37,6 +37,8 @@ if ( ! class_exists( 'WPNextShip_Licensing' ) ) {
 
 			add_action( 'admin_menu', array( $this, 'add_menu' ) );
 			add_action( 'admin_init', array( $this, 'handle_activation' ) );
+			add_action( 'admin_init', array( $this, 'schedule_cron' ) );
+            add_action( 'wpnextship_check_license_' . $args['slug'], array( $this, 'check_license_status' ) );
 		}
 
 		/**
@@ -87,17 +89,22 @@ if ( ! class_exists( 'WPNextShip_Licensing' ) ) {
 				return;
 			}
 
-			$response = wp_remote_post(
-				trailingslashit( WPNEXTSHIP_API_URL ) . 'activate',
-				array(
-					'timeout' => 15,
-					'body'    => array(
-						'license_key'    => $license_key,
-						'customer_email' => $customer_email,
-						'domain'         => site_url(),
-					),
-				)
-			);
+            $response = wp_remote_post(
+                trailingslashit( WPNEXTSHIP_API_URL ) . 'activate',
+                array(
+                    'timeout' => 15,
+                    'headers' => array(
+                        'Content-Type' => 'application/json',
+                    ),
+                    'body'    => wp_json_encode(
+                        array(
+                            'license_key'    => $license_key,
+                            'customer_email' => $customer_email,
+                            'domain'         => site_url(),
+                        )
+                    ),
+                )
+            );
 
 			if ( is_wp_error( $response ) ) {
 				add_settings_error( 'wpnextship_license', 'request_failed', $response->get_error_message(), 'error' );
@@ -125,7 +132,86 @@ if ( ! class_exists( 'WPNextShip_Licensing' ) ) {
 			);
 
 			add_settings_error( 'wpnextship_license', 'activation_success', __( 'License activated successfully.', 'wpnextship' ), 'updated' );
+            
+            // Schedule the cron.
+            $this->schedule_cron();
 		}
+
+        /**
+         * Schedule the daily license check.
+         */
+        public function schedule_cron() {
+            $license_data = get_option( $this->option_name, array() );
+
+            // If we have a license key, make sure the cron is scheduled.
+            if ( ! empty( $license_data['key'] ) ) {
+                if ( ! wp_next_scheduled( 'wpnextship_check_license_' . $this->args['slug'] ) ) {
+                    wp_schedule_event( time(), 'daily', 'wpnextship_check_license_' . $this->args['slug'] );
+                }
+            } else {
+                // No license key, clear the cron.
+                $this->clear_cron();
+            }
+        }
+
+        /**
+         * Clear the scheduled cron.
+         */
+        public function clear_cron() {
+            $timestamp = wp_next_scheduled( 'wpnextship_check_license_' . $this->args['slug'] );
+            if ( $timestamp ) {
+                wp_unschedule_event( $timestamp, 'wpnextship_check_license_' . $this->args['slug'] );
+            }
+        }
+
+        /**
+         * Check the license status remotely.
+         */
+        public function check_license_status() {
+            $license_data = get_option( $this->option_name, array() );
+
+            if ( empty( $license_data['key'] ) || empty( $license_data['email'] ) ) {
+                return;
+            }
+
+            $response = wp_remote_post(
+                trailingslashit( WPNEXTSHIP_API_URL ) . 'activate',
+                array(
+                    'timeout' => 15,
+                    'headers' => array(
+                        'Content-Type' => 'application/json',
+                    ),
+                    'body'    => wp_json_encode(
+                        array(
+                            'license_key'    => $license_data['key'],
+                            'customer_email' => $license_data['email'],
+                            'domain'         => site_url(),
+                        )
+                    ),
+                )
+            );
+
+            if ( is_wp_error( $response ) ) {
+                return;
+            }
+
+            $response_code = wp_remote_retrieve_response_code( $response );
+            $body          = wp_remote_retrieve_body( $response );
+            $data          = json_decode( $body, true );
+
+            if ( 200 !== $response_code || empty( $data['activated'] ) ) {
+                // License is invalid or expired.
+                $license_data['status'] = 'inactive';
+
+				// Remove the update_plugin transient for this plugin.
+				delete_site_transient( 'update_plugins' );
+            } else {
+                // License is active.
+                $license_data['status'] = 'active';
+            }
+
+            update_option( $this->option_name, $license_data );
+        }
 
 		/**
 		 * Render the settings page.
@@ -139,20 +225,26 @@ if ( ! class_exists( 'WPNextShip_Licensing' ) ) {
 			<div class="wrap">
 				<h1><?php esc_html_e( 'License Management', 'wpnextship' ); ?></h1>
 				<?php settings_errors( 'wpnextship_license' ); ?>
-				
+
 				<div class="card" style="max-width: 600px; padding: 20px; margin-top: 20px;">
 					<h2>
-						<?php esc_html_e( 'License Status', 'wpnextship' ); ?>: 
+						<?php esc_html_e( 'License Status', 'wpnextship' ); ?>:
 						<span class="wpnextship-badge wpnextship-badge-<?php echo esc_attr( $status ); ?>" style="background: <?php echo 'active' === $status ? '#46b450' : '#dc3232'; ?>; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 12px; vertical-align: middle;">
-							<?php echo 'active' === $status ? esc_html__( 'Active', 'wpnextship' ) : esc_html__( 'Inactive', 'wpnextship' ); ?>
+							<?php
+                            if ( 'active' === $status ) {
+                                esc_html_e( 'Active', 'wpnextship' );
+                            } else {
+                                esc_html_e( 'Inactive', 'wpnextship' );
+                            }
+                            ?>
 						</span>
 					</h2>
 					<p><?php esc_html_e( 'Enter your license key and email to activate automatic updates and support.', 'wpnextship' ); ?></p>
-					
+
 					<form method="post" action="">
 						<?php wp_nonce_field( 'wpnextship_activate_license', '_wpnextship_license_nonce' ); ?>
 						<input type="hidden" name="wpnextship_action" value="activate_license">
-						
+
 						<table class="form-table" role="presentation">
 							<tr>
 								<th scope="row"><label for="license_key"><?php esc_html_e( 'License Key', 'wpnextship' ); ?></label></th>
@@ -167,7 +259,7 @@ if ( ! class_exists( 'WPNextShip_Licensing' ) ) {
 								</td>
 							</tr>
 						</table>
-						
+
 						<p class="submit">
 							<input type="submit" name="submit" id="submit" class="button button-primary" value="<?php esc_attr_e( 'Activate License', 'wpnextship' ); ?>">
 						</p>
