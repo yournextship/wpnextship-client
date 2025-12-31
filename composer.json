@@ -1,11 +1,12 @@
 {
-    "name": "yournextship/wpnextship-client",
-    "license": "gpl-v2-or-later",
-    "authors": [
-        {
-            "name": "Zabir",
-            "email": "zabiranik.me@gmail.com"
-        }
-    ],
-    "require": {}
+  "name": "yournextship/wpnextship-client",
+  "license": "MIT",
+  "type": "composer-package",
+  "authors": [
+    {
+      "name": "Zabir",
+      "email": "zabiranik.me@gmail.com"
+    }
+  ],
+  "require": {}
 }
